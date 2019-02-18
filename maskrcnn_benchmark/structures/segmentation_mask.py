@@ -1,7 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
 
-import pycocotools.mask as mask_utils
 
 # transpose
 FLIP_LEFT_RIGHT = 0
@@ -123,16 +122,8 @@ class Polygons(object):
         return Polygons(scaled_polygons, size=size, mode=self.mode)
 
     def convert(self, mode):
-        width, height = self.size
-        if mode == "mask":
-            rles = mask_utils.frPyObjects(
-                [p.numpy() for p in self.polygons], height, width
-            )
-            rle = mask_utils.merge(rles)
-            mask = mask_utils.decode(rle)
-            mask = torch.from_numpy(mask)
-            # TODO add squeeze?
-            return mask
+        raise NotImplementedError(
+            "This function was deleted so we could remove the pycocotools dependency")
 
     def __repr__(self):
         s = self.__class__.__name__ + "("

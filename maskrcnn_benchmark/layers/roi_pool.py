@@ -5,7 +5,15 @@ from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from maskrcnn_benchmark import _C
+
+# TODO: This test is brittle. It works because I use different virtual envs for each of
+#       the options (cpu or cuda). I must check if the compiled lib already support both
+#       platforms when using gpu. This would means that the following code could stay.
+#       Otherwise, I need to check the device of the model/tensor.
+if torch.cuda.is_available():
+    from . import roi_ops_cuda as roi_ops
+else:
+    from . import roi_ops_cpu as roi_ops
 
 
 class _ROIPool(Function):
@@ -14,7 +22,7 @@ class _ROIPool(Function):
         ctx.output_size = _pair(output_size)
         ctx.spatial_scale = spatial_scale
         ctx.input_shape = input.size()
-        output, argmax = _C.roi_pool_forward(
+        output, argmax = roi_ops.roi_pool_forward(
             input, roi, spatial_scale, output_size[0], output_size[1]
         )
         ctx.save_for_backward(input, roi, argmax)
@@ -27,7 +35,7 @@ class _ROIPool(Function):
         output_size = ctx.output_size
         spatial_scale = ctx.spatial_scale
         bs, ch, h, w = ctx.input_shape
-        grad_input = _C.roi_pool_backward(
+        grad_input = roi_ops.roi_pool_backward(
             grad_output,
             input,
             rois,

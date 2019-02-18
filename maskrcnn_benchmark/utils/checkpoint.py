@@ -4,10 +4,10 @@ import os
 
 import torch
 
-from maskrcnn_benchmark.utils.model_serialization import load_state_dict
-from maskrcnn_benchmark.utils.c2_model_loading import load_c2_format
-from maskrcnn_benchmark.utils.imports import import_file
-from maskrcnn_benchmark.utils.model_zoo import cache_url
+from .model_serialization import load_state_dict
+from .c2_model_loading import load_c2_format
+from .imports import import_file
+from .model_zoo import cache_url
 
 
 class Checkpointer(object):
@@ -79,7 +79,6 @@ class Checkpointer(object):
         try:
             with open(save_file, "r") as f:
                 last_saved = f.read()
-                last_saved = last_saved.strip()
         except IOError:
             # if file doesn't exist, maybe because it has just been
             # deleted by a separate process

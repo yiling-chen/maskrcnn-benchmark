@@ -2,8 +2,8 @@
 from torch import nn
 from torch.nn import functional as F
 
-from maskrcnn_benchmark.layers import Conv2d
-from maskrcnn_benchmark.layers import ConvTranspose2d
+from ....layers import Conv2d
+from ....layers import ConvTranspose2d
 
 
 class MaskRCNNC4Predictor(nn.Module):

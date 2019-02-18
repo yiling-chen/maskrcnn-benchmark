@@ -3,10 +3,9 @@
 Implements the Generalized R-CNN framework
 """
 
-import torch
 from torch import nn
 
-from maskrcnn_benchmark.structures.image_list import to_image_list
+from ...structures.image_list import to_image_list
 
 from ..backbone import build_backbone
 from ..rpn.rpn import build_rpn
@@ -18,7 +17,7 @@ class GeneralizedRCNN(nn.Module):
     Main class for Generalized R-CNN. Currently supports boxes and masks.
     It consists of three main parts:
     - backbone
-    - rpn
+    = rpn
     - heads: takes the features + the proposals from the RPN and computes
         detections / masks from it.
     """
@@ -52,7 +51,6 @@ class GeneralizedRCNN(nn.Module):
             x, result, detector_losses = self.roi_heads(features, proposals, targets)
         else:
             # RPN-only models don't have roi_heads
-            x = features
             result = proposals
             detector_losses = {}
 

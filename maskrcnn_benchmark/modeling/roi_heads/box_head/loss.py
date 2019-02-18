@@ -2,14 +2,12 @@
 import torch
 from torch.nn import functional as F
 
-from maskrcnn_benchmark.layers import smooth_l1_loss
-from maskrcnn_benchmark.modeling.box_coder import BoxCoder
-from maskrcnn_benchmark.modeling.matcher import Matcher
-from maskrcnn_benchmark.structures.boxlist_ops import boxlist_iou
-from maskrcnn_benchmark.modeling.balanced_positive_negative_sampler import (
-    BalancedPositiveNegativeSampler
-)
-from maskrcnn_benchmark.modeling.utils import cat
+from ....layers import smooth_l1_loss
+from ...box_coder import BoxCoder
+from ...matcher import Matcher
+from ....structures.boxlist_ops import boxlist_iou
+from ...balanced_positive_negative_sampler import BalancedPositiveNegativeSampler
+from ...utils import cat
 
 
 class FastRCNNLossComputation(object):
@@ -18,13 +16,7 @@ class FastRCNNLossComputation(object):
     Also supports FPN
     """
 
-    def __init__(
-        self, 
-        proposal_matcher, 
-        fg_bg_sampler, 
-        box_coder, 
-        cls_agnostic_bbox_reg=False
-    ):
+    def __init__(self, proposal_matcher, fg_bg_sampler, box_coder):
         """
         Arguments:
             proposal_matcher (Matcher)
@@ -34,7 +26,6 @@ class FastRCNNLossComputation(object):
         self.proposal_matcher = proposal_matcher
         self.fg_bg_sampler = fg_bg_sampler
         self.box_coder = box_coder
-        self.cls_agnostic_bbox_reg = cls_agnostic_bbox_reg
 
     def match_targets_to_proposals(self, proposal, target):
         match_quality_matrix = boxlist_iou(target, proposal)
@@ -150,11 +141,7 @@ class FastRCNNLossComputation(object):
         # advanced indexing
         sampled_pos_inds_subset = torch.nonzero(labels > 0).squeeze(1)
         labels_pos = labels[sampled_pos_inds_subset]
-        if self.cls_agnostic_bbox_reg:
-            map_inds = torch.tensor([4, 5, 6, 7], device=device)
-        else:
-            map_inds = 4 * labels_pos[:, None] + torch.tensor(
-                [0, 1, 2, 3], device=device)
+        map_inds = 4 * labels_pos[:, None] + torch.tensor([0, 1, 2, 3], device=device)
 
         box_loss = smooth_l1_loss(
             box_regression[sampled_pos_inds_subset[:, None], map_inds],
@@ -181,13 +168,6 @@ def make_roi_box_loss_evaluator(cfg):
         cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE, cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION
     )
 
-    cls_agnostic_bbox_reg = cfg.MODEL.CLS_AGNOSTIC_BBOX_REG
-
-    loss_evaluator = FastRCNNLossComputation(
-        matcher, 
-        fg_bg_sampler, 
-        box_coder, 
-        cls_agnostic_bbox_reg
-    )
+    loss_evaluator = FastRCNNLossComputation(matcher, fg_bg_sampler, box_coder)
 
     return loss_evaluator

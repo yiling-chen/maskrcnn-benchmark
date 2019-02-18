@@ -1,7 +1,9 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
-# from ._utils import _C
-from maskrcnn_benchmark import _C
 
-nms = _C.nms
+import torch
+# roi_ops only imported to load library
+from . import roi_ops # noqa 
+
+nms = torch.ops.roi_ops.nms
 # nms.__doc__ = """
 # This function performs Non-maximum suppresion"""

@@ -1,14 +1,14 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
 
-from maskrcnn_benchmark.modeling.box_coder import BoxCoder
-from maskrcnn_benchmark.structures.bounding_box import BoxList
-from maskrcnn_benchmark.structures.boxlist_ops import cat_boxlist
-from maskrcnn_benchmark.structures.boxlist_ops import boxlist_nms
-from maskrcnn_benchmark.structures.boxlist_ops import remove_small_boxes
+from ..box_coder import BoxCoder
+from ...structures.bounding_box import BoxList
+from ...structures.boxlist_ops import cat_boxlist
+from ...structures.boxlist_ops import boxlist_nms
+from ...structures.boxlist_ops import remove_small_boxes
 
 from ..utils import cat
-from .utils import permute_and_flatten
+
 
 class RPNPostProcessor(torch.nn.Module):
     """
@@ -82,10 +82,10 @@ class RPNPostProcessor(torch.nn.Module):
         N, A, H, W = objectness.shape
 
         # put in the same format as anchors
-        objectness = permute_and_flatten(objectness, N, A, 1, H, W).view(N, -1)
+        objectness = objectness.permute(0, 2, 3, 1).reshape(N, -1)
         objectness = objectness.sigmoid()
-
-        box_regression = permute_and_flatten(box_regression, N, A, 4, H, W)
+        box_regression = box_regression.view(N, -1, 4, H, W).permute(0, 3, 4, 1, 2)
+        box_regression = box_regression.reshape(N, -1, 4)
 
         num_anchors = A * H * W
 

@@ -5,7 +5,7 @@ from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
-from maskrcnn_benchmark import _C
+from . import roi_ops
 
 
 class _ROIAlign(Function):
@@ -16,7 +16,7 @@ class _ROIAlign(Function):
         ctx.spatial_scale = spatial_scale
         ctx.sampling_ratio = sampling_ratio
         ctx.input_shape = input.size()
-        output = _C.roi_align_forward(
+        output = roi_ops.roi_align_forward(
             input, roi, spatial_scale, output_size[0], output_size[1], sampling_ratio
         )
         return output
@@ -29,7 +29,7 @@ class _ROIAlign(Function):
         spatial_scale = ctx.spatial_scale
         sampling_ratio = ctx.sampling_ratio
         bs, ch, h, w = ctx.input_shape
-        grad_input = _C.roi_align_backward(
+        grad_input = roi_ops.roi_align_backward(
             grad_output,
             rois,
             spatial_scale,
@@ -50,11 +50,16 @@ roi_align = _ROIAlign.apply
 class ROIAlign(nn.Module):
     def __init__(self, output_size, spatial_scale, sampling_ratio):
         super(ROIAlign, self).__init__()
-        self.output_size = output_size
+        self.output_size = _pair(output_size)
         self.spatial_scale = spatial_scale
         self.sampling_ratio = sampling_ratio
 
     def forward(self, input, rois):
+        if torch._C._get_tracing_state():
+            return roi_ops.roi_align_forward(
+                input, rois, self.spatial_scale, self.output_size[0],
+                self.output_size[1], self.sampling_ratio)
+
         return roi_align(
             input, rois, self.output_size, self.spatial_scale, self.sampling_ratio
         )

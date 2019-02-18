@@ -1,28 +1,23 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
 import torch.nn.functional as F
-from torch import nn
 
-from maskrcnn_benchmark.structures.bounding_box import BoxList
-from maskrcnn_benchmark.structures.boxlist_ops import boxlist_nms
-from maskrcnn_benchmark.structures.boxlist_ops import cat_boxlist
-from maskrcnn_benchmark.modeling.box_coder import BoxCoder
+from ....structures.bounding_box import BoxList
+from ....structures.boxlist_ops import boxlist_nms
+from ....structures.boxlist_ops import cat_boxlist
+from ...box_coder import BoxCoder
 
 
-class PostProcessor(nn.Module):
+class PostProcessor(torch.jit.ScriptModule):
     """
     From a set of classification scores, box regression and proposals,
     computes the post-processed boxes, and applies NMS to obtain the
     final results
     """
+    __constants__ = ['detections_per_img']
 
     def __init__(
-        self,
-        score_thresh=0.05,
-        nms=0.5,
-        detections_per_img=100,
-        box_coder=None,
-        cls_agnostic_bbox_reg=False
+        self, score_thresh=0.05, nms=0.5, detections_per_img=100, box_coder=None
     ):
         """
         Arguments:
@@ -38,7 +33,17 @@ class PostProcessor(nn.Module):
         if box_coder is None:
             box_coder = BoxCoder(weights=(10., 10., 5., 5.))
         self.box_coder = box_coder
-        self.cls_agnostic_bbox_reg = cls_agnostic_bbox_reg
+
+    @torch.jit.script_method
+    def detections_to_keep(self, scores):
+        number_of_detections = scores.size(0)
+
+        # Limit to max_per_image detections **over all classes**
+        if number_of_detections > self.detections_per_img > 0:
+            __, keep = torch.topk(scores, number_of_detections - self.detections_per_img + 1)
+        else:            
+            keep = torch.ones_like(scores, dtype=torch.uint8)
+        return keep
 
     def forward(self, x, boxes):
         """
@@ -60,13 +65,9 @@ class PostProcessor(nn.Module):
         boxes_per_image = [len(box) for box in boxes]
         concat_boxes = torch.cat([a.bbox for a in boxes], dim=0)
 
-        if self.cls_agnostic_bbox_reg:
-            box_regression = box_regression[:, -4:]
         proposals = self.box_coder.decode(
             box_regression.view(sum(boxes_per_image), -1), concat_boxes
         )
-        if self.cls_agnostic_bbox_reg:
-            proposals = proposals.repeat(1, class_prob.shape[1])
 
         num_classes = class_prob.shape[1]
 
@@ -111,7 +112,6 @@ class PostProcessor(nn.Module):
         boxes = boxlist.bbox.reshape(-1, num_classes * 4)
         scores = boxlist.get_field("scores").reshape(-1, num_classes)
 
-        device = scores.device
         result = []
         # Apply threshold on detection probabilities and apply NMS
         # Skip j = 0, because it's the background class
@@ -119,35 +119,25 @@ class PostProcessor(nn.Module):
         for j in range(1, num_classes):
             inds = inds_all[:, j].nonzero().squeeze(1)
             scores_j = scores[inds, j]
-            boxes_j = boxes[inds, j * 4 : (j + 1) * 4]
+            boxes_j = boxes[inds, j * 4:(j + 1) * 4]
             boxlist_for_class = BoxList(boxes_j, boxlist.size, mode="xyxy")
             boxlist_for_class.add_field("scores", scores_j)
             boxlist_for_class = boxlist_nms(
-                boxlist_for_class, self.nms
-            )
-            num_labels = len(boxlist_for_class)
+                boxlist_for_class, self.nms, score_field="scores")
             boxlist_for_class.add_field(
-                "labels", torch.full((num_labels,), j, dtype=torch.int64, device=device)
-            )
+                # we use full_like to allow tracing with flexible shape
+                "labels", torch.full_like(boxlist_for_class.bbox[:, 0], j, dtype=torch.int64))
             result.append(boxlist_for_class)
 
         result = cat_boxlist(result)
-        number_of_detections = len(result)
-
-        # Limit to max_per_image detections **over all classes**
-        if number_of_detections > self.detections_per_img > 0:
-            cls_scores = result.get_field("scores")
-            image_thresh, _ = torch.kthvalue(
-                cls_scores.cpu(), number_of_detections - self.detections_per_img + 1
-            )
-            keep = cls_scores >= image_thresh.item()
-            keep = torch.nonzero(keep).squeeze(1)
-            result = result[keep]
+        scores = result.get_field("scores")
+        # scores = scores.to('cpu')
+        keep = self.detections_to_keep(scores)
+        result = result[keep]
         return result
 
 
 def make_roi_box_post_processor(cfg):
-    use_fpn = cfg.MODEL.ROI_HEADS.USE_FPN
 
     bbox_reg_weights = cfg.MODEL.ROI_HEADS.BBOX_REG_WEIGHTS
     box_coder = BoxCoder(weights=bbox_reg_weights)
@@ -155,13 +145,8 @@ def make_roi_box_post_processor(cfg):
     score_thresh = cfg.MODEL.ROI_HEADS.SCORE_THRESH
     nms_thresh = cfg.MODEL.ROI_HEADS.NMS
     detections_per_img = cfg.MODEL.ROI_HEADS.DETECTIONS_PER_IMG
-    cls_agnostic_bbox_reg = cfg.MODEL.CLS_AGNOSTIC_BBOX_REG
 
     postprocessor = PostProcessor(
-        score_thresh,
-        nms_thresh,
-        detections_per_img,
-        box_coder,
-        cls_agnostic_bbox_reg
+        score_thresh, nms_thresh, detections_per_img, box_coder
     )
     return postprocessor

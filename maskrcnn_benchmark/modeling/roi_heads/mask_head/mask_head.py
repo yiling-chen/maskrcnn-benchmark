@@ -1,8 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import torch
-from torch import nn
 
-from maskrcnn_benchmark.structures.bounding_box import BoxList
+from ....structures.bounding_box import BoxList
 
 from .roi_mask_feature_extractors import make_roi_mask_feature_extractor
 from .roi_mask_predictors import make_roi_mask_predictor
@@ -23,7 +22,6 @@ def keep_only_positive_boxes(boxes):
     assert boxes[0].has_field("labels")
     positive_boxes = []
     positive_inds = []
-    num_boxes = 0
     for boxes_per_image in boxes:
         labels = boxes_per_image.get_field("labels")
         inds_mask = labels > 0

@@ -7,12 +7,6 @@ Example usage. Strings may be specified in the config file.
         "BottleneckWithFixedBatchNorm",
         "ResNet50StagesTo4",
     )
-OR:
-    model = ResNet(
-        "StemWithGN",
-        "BottleneckWithGN",
-        "ResNet50StagesTo4",
-    )
 Custom implementations may be written in user code and hooked in via the
 `register_*` functions.
 """
@@ -22,10 +16,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from maskrcnn_benchmark.layers import FrozenBatchNorm2d
-from maskrcnn_benchmark.layers import Conv2d
-from maskrcnn_benchmark.modeling.make_layers import group_norm
-from maskrcnn_benchmark.utils.registry import Registry
+from ...layers import FrozenBatchNorm2d
+from ...layers import Conv2d
 
 
 # ResNet stage specification
@@ -41,6 +33,11 @@ StageSpec = namedtuple(
 # -----------------------------------------------------------------------------
 # Standard ResNet models
 # -----------------------------------------------------------------------------
+# Resnet-18 up tp stage 4 (excludes stage 5)
+ResNet18StagesTo4 = tuple(
+    StageSpec(index=i, block_count=c, return_features=r)
+    for (i, c, r) in ((1, 2, False), (2, 2, False), (3, 2, True))
+)
 # ResNet-50 (including all stages)
 ResNet50StagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
@@ -50,16 +47,6 @@ ResNet50StagesTo5 = tuple(
 ResNet50StagesTo4 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 6, True))
-)
-# ResNet-101 (including all stages)
-ResNet101StagesTo5 = tuple(
-    StageSpec(index=i, block_count=c, return_features=r)
-    for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, False), (4, 3, True))
-)
-# ResNet-101 up to stage 4 (excludes stage 5)
-ResNet101StagesTo4 = tuple(
-    StageSpec(index=i, block_count=c, return_features=r)
-    for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, True))
 )
 # ResNet-50-FPN (including all stages)
 ResNet50FPNStagesTo5 = tuple(
@@ -71,11 +58,7 @@ ResNet101FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, True), (2, 4, True), (3, 23, True), (4, 3, True))
 )
-# ResNet-152-FPN (including all stages)
-ResNet152FPNStagesTo5 = tuple(
-    StageSpec(index=i, block_count=c, return_features=r)
-    for (i, c, r) in ((1, 3, True), (2, 8, True), (3, 36, True), (4, 3, True))
-)
+
 
 class ResNet(nn.Module):
     def __init__(self, cfg):
@@ -125,8 +108,6 @@ class ResNet(nn.Module):
         self._freeze_backbone(cfg.MODEL.BACKBONE.FREEZE_CONV_BODY_AT)
 
     def _freeze_backbone(self, freeze_at):
-        if freeze_at < 0:
-            return
         for stage_index in range(freeze_at):
             if stage_index == 0:
                 m = self.stem  # stage 0 is the stem
@@ -155,7 +136,6 @@ class ResNetHead(nn.Module):
         stride_in_1x1=True,
         stride_init=None,
         res2_out_channels=256,
-        dilation=1
     ):
         super(ResNetHead, self).__init__()
 
@@ -182,7 +162,6 @@ class ResNetHead(nn.Module):
                 num_groups,
                 stride_in_1x1,
                 first_stride=stride,
-                dilation=dilation
             )
             stride = None
             self.add_module(name, module)
@@ -203,7 +182,6 @@ def _make_stage(
     num_groups,
     stride_in_1x1,
     first_stride,
-    dilation=1
 ):
     blocks = []
     stride = first_stride
@@ -216,7 +194,6 @@ def _make_stage(
                 num_groups,
                 stride_in_1x1,
                 stride,
-                dilation=dilation
             )
         )
         stride = 1
@@ -224,37 +201,104 @@ def _make_stage(
     return nn.Sequential(*blocks)
 
 
-class Bottleneck(nn.Module):
+class BasicBlockWithFixedBatchNorm(nn.Module):
+    """
+    Implements the basic residual block used by Resnet-18 and 34.
+    
+    Args:
+        in_channels (int): input tensor's number of channels
+        filter_channels (int): number of channels to be used by the block's convolutions op.
+        out_channels (int): output tensor's number of channels
+        num_groups (int, default=1): whether to use grouped convolution
+        stride_in_first (bool, default=True): whether to apply the stride to the
+                first conv (case True), or to the second (case False)
+        stride (int, default=1): convolution stride
+        """
+    def __init__(
+        self,
+        in_channels,
+        filter_channels,
+        out_channels,
+        num_groups=1,
+        stride_in_first=True,
+        stride=1,
+    ):
+        super(BasicBlockWithFixedBatchNorm, self).__init__()
+
+        self.downsample = None
+        if in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                Conv2d(
+                    in_channels, out_channels, kernel_size=1, stride=stride, bias=False
+                ),
+                FrozenBatchNorm2d(out_channels),
+            )
+
+        # The original MSRA ResNet models have stride in the first 1x1 conv
+        # The subsequent fb.torch.resnet and Caffe2 ResNe[X]t implementations have
+        # stride in the 3x3 conv
+        stride_1x1, stride_3x3 = (stride, 1) if stride_in_first else (1, stride)
+
+        self.conv1 = Conv2d(
+            in_channels,
+            filter_channels,
+            kernel_size=3,
+            stride=stride_1x1,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = FrozenBatchNorm2d(filter_channels)
+
+        self.conv2 = Conv2d(
+            filter_channels,
+            filter_channels,
+            kernel_size=3,
+            stride=stride_3x3,
+            padding=1,
+            bias=False,
+            groups=num_groups,
+        )
+        self.bn2 = FrozenBatchNorm2d(filter_channels)
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu_(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = F.relu_(out)
+
+        return out
+
+
+class BottleneckWithFixedBatchNorm(nn.Module):
     def __init__(
         self,
         in_channels,
         bottleneck_channels,
         out_channels,
-        num_groups,
-        stride_in_1x1,
-        stride,
-        dilation,
-        norm_func
+        num_groups=1,
+        stride_in_1x1=True,
+        stride=1,
     ):
-        super(Bottleneck, self).__init__()
+        super(BottleneckWithFixedBatchNorm, self).__init__()
 
         self.downsample = None
         if in_channels != out_channels:
-            down_stride = stride if dilation == 1 else 1
             self.downsample = nn.Sequential(
                 Conv2d(
-                    in_channels, out_channels,
-                    kernel_size=1, stride=down_stride, bias=False
+                    in_channels, out_channels, kernel_size=1, stride=stride, bias=False
                 ),
-                norm_func(out_channels),
+                FrozenBatchNorm2d(out_channels),
             )
-            for modules in [self.downsample,]:
-                for l in modules.modules():
-                    if isinstance(l, Conv2d):
-                        nn.init.kaiming_uniform_(l.weight, a=1)
-
-        if dilation > 1:
-            stride = 1 # reset to be 1
 
         # The original MSRA ResNet models have stride in the first 1x1 conv
         # The subsequent fb.torch.resnet and Caffe2 ResNe[X]t implementations have
@@ -268,7 +312,7 @@ class Bottleneck(nn.Module):
             stride=stride_1x1,
             bias=False,
         )
-        self.bn1 = norm_func(bottleneck_channels)
+        self.bn1 = FrozenBatchNorm2d(bottleneck_channels)
         # TODO: specify init for the above
 
         self.conv2 = Conv2d(
@@ -276,23 +320,19 @@ class Bottleneck(nn.Module):
             bottleneck_channels,
             kernel_size=3,
             stride=stride_3x3,
-            padding=dilation,
+            padding=1,
             bias=False,
             groups=num_groups,
-            dilation=dilation
         )
-        self.bn2 = norm_func(bottleneck_channels)
+        self.bn2 = FrozenBatchNorm2d(bottleneck_channels)
 
         self.conv3 = Conv2d(
             bottleneck_channels, out_channels, kernel_size=1, bias=False
         )
-        self.bn3 = norm_func(out_channels)
-
-        for l in [self.conv1, self.conv2, self.conv3,]:
-            nn.init.kaiming_uniform_(l.weight, a=1)
+        self.bn3 = FrozenBatchNorm2d(out_channels)
 
     def forward(self, x):
-        identity = x
+        residual = x
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -306,27 +346,24 @@ class Bottleneck(nn.Module):
         out = self.bn3(out0)
 
         if self.downsample is not None:
-            identity = self.downsample(x)
+            residual = self.downsample(x)
 
-        out += identity
+        out += residual
         out = F.relu_(out)
 
         return out
 
 
-class BaseStem(nn.Module):
-    def __init__(self, cfg, norm_func):
-        super(BaseStem, self).__init__()
+class StemWithFixedBatchNorm(nn.Module):
+    def __init__(self, cfg):
+        super(StemWithFixedBatchNorm, self).__init__()
 
         out_channels = cfg.MODEL.RESNETS.STEM_OUT_CHANNELS
 
         self.conv1 = Conv2d(
             3, out_channels, kernel_size=7, stride=2, padding=3, bias=False
         )
-        self.bn1 = norm_func(out_channels)
-
-        for l in [self.conv1,]:
-            nn.init.kaiming_uniform_(l.weight, a=1)
+        self.bn1 = FrozenBatchNorm2d(out_channels)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -336,82 +373,34 @@ class BaseStem(nn.Module):
         return x
 
 
-class BottleneckWithFixedBatchNorm(Bottleneck):
-    def __init__(
-        self,
-        in_channels,
-        bottleneck_channels,
-        out_channels,
-        num_groups=1,
-        stride_in_1x1=True,
-        stride=1,
-        dilation=1
-    ):
-        super(BottleneckWithFixedBatchNorm, self).__init__(
-            in_channels=in_channels,
-            bottleneck_channels=bottleneck_channels,
-            out_channels=out_channels,
-            num_groups=num_groups,
-            stride_in_1x1=stride_in_1x1,
-            stride=stride,
-            dilation=dilation,
-            norm_func=FrozenBatchNorm2d
-        )
-
-
-class StemWithFixedBatchNorm(BaseStem):
-    def __init__(self, cfg):
-        super(StemWithFixedBatchNorm, self).__init__(
-            cfg, norm_func=FrozenBatchNorm2d
-        )
-
-
-class BottleneckWithGN(Bottleneck):
-    def __init__(
-        self,
-        in_channels,
-        bottleneck_channels,
-        out_channels,
-        num_groups=1,
-        stride_in_1x1=True,
-        stride=1,
-        dilation=1
-    ):
-        super(BottleneckWithGN, self).__init__(
-            in_channels=in_channels,
-            bottleneck_channels=bottleneck_channels,
-            out_channels=out_channels,
-            num_groups=num_groups,
-            stride_in_1x1=stride_in_1x1,
-            stride=stride,
-            dilation=dilation,
-            norm_func=group_norm
-        )
-
-
-class StemWithGN(BaseStem):
-    def __init__(self, cfg):
-        super(StemWithGN, self).__init__(cfg, norm_func=group_norm)
-
-
-_TRANSFORMATION_MODULES = Registry({
+_TRANSFORMATION_MODULES = {
     "BottleneckWithFixedBatchNorm": BottleneckWithFixedBatchNorm,
-    "BottleneckWithGN": BottleneckWithGN,
-})
+    "BasicBlockWithFixedBatchNorm": BasicBlockWithFixedBatchNorm,
+}
 
-_STEM_MODULES = Registry({
-    "StemWithFixedBatchNorm": StemWithFixedBatchNorm,
-    "StemWithGN": StemWithGN,
-})
+_STEM_MODULES = {"StemWithFixedBatchNorm": StemWithFixedBatchNorm}
 
-_STAGE_SPECS = Registry({
+_STAGE_SPECS = {
+    "R-18-C4": ResNet18StagesTo4,
     "R-50-C4": ResNet50StagesTo4,
     "R-50-C5": ResNet50StagesTo5,
-    "R-101-C4": ResNet101StagesTo4,
-    "R-101-C5": ResNet101StagesTo5,
     "R-50-FPN": ResNet50FPNStagesTo5,
-    "R-50-FPN-RETINANET": ResNet50FPNStagesTo5,
     "R-101-FPN": ResNet101FPNStagesTo5,
-    "R-101-FPN-RETINANET": ResNet101FPNStagesTo5,
-    "R-152-FPN": ResNet152FPNStagesTo5,
-})
+}
+
+
+def register_transformation_module(module_name, module):
+    _register_generic(_TRANSFORMATION_MODULES, module_name, module)
+
+
+def register_stem_module(module_name, module):
+    _register_generic(_STEM_MODULES, module_name, module)
+
+
+def register_stage_spec(stage_spec_name, stage_spec):
+    _register_generic(_STAGE_SPECS, stage_spec_name, stage_spec)
+
+
+def _register_generic(module_dict, module_name, module):
+    assert module_name not in module_dict
+    module_dict[module_name] = module
